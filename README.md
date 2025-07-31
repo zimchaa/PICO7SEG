@@ -12,6 +12,8 @@ This project displays time and temperature on a YSD-439AY2B-35 4-digit 7-segment
 - Flicker-free multiplexed display
 - Simple wiring approach connecting top 8 pins to top of Pico, bottom 8 to bottom
 
+![Raspberry Pi Pico 7-Segment Display Clock](attached_assets/IMG_4442_1753983734378.jpeg)
+
 ## Hardware Requirements
 
 - Raspberry Pi Pico (or Pico W for WiFi)
