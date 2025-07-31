@@ -18,8 +18,8 @@ This project displays time and temperature on a YSD-439AY2B-35 4-digit 7-segment
 - YSD-439AY2B-35 4-digit 7-segment display (Common Anode)
 - Breadboard
 - Jumper wires
-- 8x 220Ω resistors (current limiting for segments)
-- 4x 1kΩ resistors (current limiting for digits)
+- 8x 220Ω resistors (nice to haves, current limiting for segments)
+- 4x 1kΩ resistors (nice to haves, current limiting for digits)
 
 ## Display Specifications
 
