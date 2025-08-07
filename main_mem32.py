@@ -1,4 +1,5 @@
-# main.py (Refactored with a dedicated Scroller class)
+
+# main.py (Refactored with improved display API and clean decimal point handling)
 import machine
 import utime
 import network
@@ -17,7 +18,7 @@ REFRESH_DELAY_US = 2500
 SCROLL_DELAY_MS = 350
 MANUAL_MODE_TIMEOUT_S = 15
 
-# --- Messages (Padding is now handled by the Scroller class) ---
+# --- Messages ---
 STARTUP_MESSAGE = "HELLO PICO"
 WIFI_FAIL_MESSAGE = "WIFI FAILED"
 
@@ -32,30 +33,29 @@ PINS = {
 
 
 class SevenSegmentDisplay:
-    """ Manages a 4-digit, 7-segment display with multiplexing. (Unchanged from previous refactor) """
-    SEGMENT_MAP = {
-        ' ': (1, 1, 1, 1, 1, 1, 1, 1), '0': (0, 0, 0, 0, 0, 0, 1, 1),
-        '1': (1, 0, 0, 1, 1, 1, 1, 1), '2': (0, 0, 1, 0, 0, 1, 0, 1),
-        '3': (0, 0, 0, 0, 1, 1, 0, 1), '4': (1, 0, 0, 1, 1, 0, 0, 1),
-        '5': (0, 1, 0, 0, 1, 0, 0, 1), '6': (0, 1, 0, 0, 0, 0, 0, 1),
-        '7': (0, 0, 0, 1, 1, 1, 1, 1), '8': (0, 0, 0, 0, 0, 0, 0, 1),
-        '9': (0, 0, 0, 0, 1, 0, 0, 1), 'A': (0, 0, 0, 1, 0, 0, 0, 1),
-        'B': (1, 1, 0, 0, 0, 0, 0, 1), 'C': (0, 1, 1, 0, 0, 0, 1, 1), 
-        'E': (0, 1, 1, 0, 0, 0, 0, 1), 'F': (0, 1, 1, 1, 0, 0, 0, 1), 
-        'H': (1, 0, 0, 1, 0, 0, 0, 1), 'I': (1, 1, 1, 1, 0, 0, 1, 1), 
-        'L': (1, 1, 1, 0, 0, 0, 1, 1), 'N': (0, 0, 1, 1, 0, 1, 0, 1), 
-        'O': (0, 0, 0, 0, 0, 0, 1, 1), 'P': (0, 0, 1, 1, 0, 0, 0, 1), 
-        'S': (0, 1, 0, 0, 1, 0, 0, 1), 'U': (1, 1, 0, 0, 0, 1, 1, 1), 
-        'W': (1, 0, 0, 0, 1, 0, 1, 1), '-': (1, 1, 1, 1, 1, 1, 0, 1),
+    """ Manages a 4-digit, 7-segment display with multiplexing and clean decimal point handling. """
+    
+    # Base segment patterns (without decimal point)
+    BASE_SEGMENT_MAP = {
+        ' ': (1, 1, 1, 1, 1, 1, 1), '0': (0, 0, 0, 0, 0, 0, 1),
+        '1': (1, 0, 0, 1, 1, 1, 1), '2': (0, 0, 1, 0, 0, 1, 0),
+        '3': (0, 0, 0, 0, 1, 1, 0), '4': (1, 0, 0, 1, 1, 0, 0),
+        '5': (0, 1, 0, 0, 1, 0, 0), '6': (0, 1, 0, 0, 0, 0, 0),
+        '7': (0, 0, 0, 1, 1, 1, 1), '8': (0, 0, 0, 0, 0, 0, 0),
+        '9': (0, 0, 0, 0, 1, 0, 0), 'A': (0, 0, 0, 1, 0, 0, 0),
+        'B': (1, 1, 0, 0, 0, 0, 0), 'C': (0, 1, 1, 0, 0, 0, 1), 
+        'E': (0, 1, 1, 0, 0, 0, 0), 'F': (0, 1, 1, 1, 0, 0, 0), 
+        'H': (1, 0, 0, 1, 0, 0, 0), 'I': (1, 1, 1, 1, 0, 0, 1), 
+        'L': (1, 1, 1, 0, 0, 0, 1), 'N': (0, 0, 1, 1, 0, 1, 0), 
+        'O': (0, 0, 0, 0, 0, 0, 1), 'P': (0, 0, 1, 1, 0, 0, 0), 
+        'S': (0, 1, 0, 0, 1, 0, 0), 'U': (1, 1, 0, 0, 0, 1, 1), 
+        'W': (1, 0, 0, 0, 1, 0, 1), '-': (1, 1, 1, 1, 1, 1, 0),
     }
-    for i in range(10):
-        char = str(i)
-        SEGMENT_MAP[char + '.'] = SEGMENT_MAP[char][:-1] + (0,)
 
     def __init__(self, pin_map, refresh_delay_us):
         self._pins = pin_map
         self.refresh_delay_us = refresh_delay_us
-        self._display_buffer = [' '] * 4
+        self._display_data = [(' ', False)] * 4  # (character, has_decimal_point)
         self._colon_on = False
         self._degree_on = False
         self._setup_pins()
@@ -77,63 +77,150 @@ class SevenSegmentDisplay:
         SIO_BASE = 0xd0000000
         self._GPIO_OUT_SET = SIO_BASE + 0x14
         self._GPIO_OUT_CLR = SIO_BASE + 0x18
+        
+        # Setup digit control masks
         anode_pins_list = ['d1', 'd2', 'd3', 'd4']
         self._ALL_ANODES_MASK = self._get_pin_mask(anode_pins_list)
         self._ANODE_MASKS = [self._get_pin_mask([d]) for d in anode_pins_list]
-        segment_pins_list = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'dp']
+        
+        # Setup segment control masks
+        segment_pins_list = ['a', 'b', 'c', 'd', 'e', 'f', 'g']
         self._ALL_SEGMENTS_MASK = self._get_pin_mask(segment_pins_list)
+        self._DP_MASK = self._get_pin_mask(['dp'])
+        
+        # Pre-compute segment patterns for each character
         self._SEG_ON_MASKS, self._SEG_OFF_MASKS = {}, {}
-        for char, pattern in self.SEGMENT_MAP.items():
+        for char, pattern in self.BASE_SEGMENT_MAP.items():
             on_mask, off_mask = 0, 0
             for i, pin_state in enumerate(pattern):
                 pin_num = self._pins[segment_pins_list[i]]
-                if pin_state == 0: on_mask |= (1 << pin_num)
-                else: off_mask |= (1 << pin_num)
+                if pin_state == 0: 
+                    on_mask |= (1 << pin_num)
+                else: 
+                    off_mask |= (1 << pin_num)
             self._SEG_ON_MASKS[char] = on_mask
             self._SEG_OFF_MASKS[char] = off_mask
+        
+        # Setup special LED masks
         self._COLON_ANODE_MASK = self._get_pin_mask(['colon_anode'])
         self._COLON_CATHODE_MASK = self._get_pin_mask(['colon_cathode'])
         self._DEG_ANODE_MASK = self._get_pin_mask(['deg_anode'])
         self._DEG_CATHODE_MASK = self._get_pin_mask(['deg_cathode'])
+        
+        # Initialize all pins to safe state
         machine.mem32[self._GPIO_OUT_CLR] = self._ALL_ANODES_MASK | self._COLON_ANODE_MASK | self._DEG_ANODE_MASK
-        machine.mem32[self._GPIO_OUT_SET] = self._ALL_SEGMENTS_MASK | self._COLON_CATHODE_MASK | self._DEG_CATHODE_MASK
+        machine.mem32[self._GPIO_OUT_SET] = self._ALL_SEGMENTS_MASK | self._DP_MASK | self._COLON_CATHODE_MASK | self._DEG_CATHODE_MASK
 
-    def show(self, text, colon=None, degree=None):
-        processed_text = []
-        i = 0
-        while i < len(text) and len(processed_text) < 4:
-            char = text[i].upper()
-            if i + 1 < len(text) and text[i+1] == '.':
-                processed_text.append(char + '.')
-                i += 2
-            else:
-                processed_text.append(char)
-                i += 1
-        self._display_buffer = list(f"{''.join(processed_text): <4}")
-        if colon is not None: self._colon_on = colon
-        if degree is not None: self._degree_on = degree
+    def show_text(self, text, colon=None, degree=None):
+        """
+        Display text on the 7-segment display.
+        
+        Args:
+            text (str): Text to display (up to 4 characters). Can include decimal points.
+            colon (bool, optional): Show colon between digits 2 and 3
+            degree (bool, optional): Show degree symbol
+        """
+        # Parse text and handle decimal points
+        self._display_data = [(' ', False)] * 4
+        text_pos = 0
+        display_pos = 0
+        
+        while text_pos < len(text) and display_pos < 4:
+            char = text[text_pos].upper()
+            has_dp = False
+            
+            # Check if next character is a decimal point
+            if text_pos + 1 < len(text) and text[text_pos + 1] == '.':
+                has_dp = True
+                text_pos += 1  # Skip the decimal point character
+            
+            self._display_data[display_pos] = (char, has_dp)
+            text_pos += 1
+            display_pos += 1
+        
+        # Update special indicators
+        if colon is not None:
+            self._colon_on = colon
+        if degree is not None:
+            self._degree_on = degree
+
+    def show_time(self, hour, minute, colon_blink=True):
+        """
+        Display time in HH:MM format.
+        
+        Args:
+            hour (int): Hour (0-23)
+            minute (int): Minute (0-59)
+            colon_blink (bool): Whether to show the colon
+        """
+        time_str = f"{hour:02d}{minute:02d}"
+        self.show_text(time_str, colon=colon_blink, degree=False)
+
+    def show_temperature(self, temp_celsius):
+        """
+        Display temperature with degree symbol.
+        
+        Args:
+            temp_celsius (float): Temperature in Celsius
+        """
+        if temp_celsius >= 100:
+            temp_str = f"{temp_celsius:4.0f}"
+        elif temp_celsius >= 10:
+            temp_str = f"{temp_celsius:4.1f}"
+        elif temp_celsius >= 0:
+            temp_str = f" {temp_celsius:3.1f}"
+        else:
+            temp_str = f"{temp_celsius:4.1f}"
+        
+        # Replace last character with 'C' and add degree symbol
+        if len(temp_str) >= 4:
+            temp_str = temp_str[:3] + 'C'
+        
+        self.show_text(temp_str, colon=False, degree=True)
+
+    def clear(self):
+        """Clear the display."""
+        self.show_text("    ", colon=False, degree=False)
 
     def refresh(self):
+        """Refresh the display by multiplexing through all digits."""
         for i in range(4):
+            # Turn off all digits first
             machine.mem32[self._GPIO_OUT_CLR] = self._ALL_ANODES_MASK
-            char_to_display = self._display_buffer[i]
-            if char_to_display in self.SEGMENT_MAP:
-                machine.mem32[self._GPIO_OUT_SET] = self._SEG_OFF_MASKS[char_to_display]
-                machine.mem32[self._GPIO_OUT_CLR] = self._SEG_ON_MASKS[char_to_display]
+            
+            char, has_dp = self._display_data[i]
+            
+            # Set segment pattern
+            if char in self._SEG_ON_MASKS:
+                machine.mem32[self._GPIO_OUT_SET] = self._SEG_OFF_MASKS[char]
+                machine.mem32[self._GPIO_OUT_CLR] = self._SEG_ON_MASKS[char]
             else:
+                # Unknown character - turn off all segments
                 machine.mem32[self._GPIO_OUT_SET] = self._ALL_SEGMENTS_MASK
+            
+            # Handle decimal point
+            if has_dp:
+                machine.mem32[self._GPIO_OUT_CLR] = self._DP_MASK
+            else:
+                machine.mem32[self._GPIO_OUT_SET] = self._DP_MASK
+            
+            # Turn on current digit
             machine.mem32[self._GPIO_OUT_SET] = self._ANODE_MASKS[i]
+            
+            # Handle special LEDs on first digit cycle
             if i == 0:
                 if self._colon_on:
                     machine.mem32[self._GPIO_OUT_SET] = self._COLON_ANODE_MASK
                     machine.mem32[self._GPIO_OUT_CLR] = self._COLON_CATHODE_MASK
                 else:
                     machine.mem32[self._GPIO_OUT_CLR] = self._COLON_ANODE_MASK
+                
                 if self._degree_on:
                     machine.mem32[self._GPIO_OUT_SET] = self._DEG_ANODE_MASK
                     machine.mem32[self._GPIO_OUT_CLR] = self._DEG_CATHODE_MASK
                 else:
                     machine.mem32[self._GPIO_OUT_CLR] = self._DEG_ANODE_MASK
+            
             utime.sleep_us(self.refresh_delay_us)
 
 
@@ -160,7 +247,7 @@ class Scroller:
         """
         # If the text fits, just show it and we're done.
         if len(text) <= 4:
-            self.display.show(text)
+            self.display.show_text(text)
             self.is_active = False
             return
 
@@ -191,7 +278,7 @@ class Scroller:
             # Display the 4-character slice of the message
             display_slice = self.message[self.index : self.index + 4]
             # Scrolling text does not use colon or degree indicators
-            self.display.show(display_slice, colon=False, degree=False)
+            self.display.show_text(display_slice, colon=False, degree=False)
             
             self.index += 1
             
@@ -229,7 +316,6 @@ class ClockApp:
         self.manual_mode_index = 0
 
     def _connect_to_wifi(self):
-        # (Implementation unchanged)
         self.wlan = network.WLAN(network.STA_IF)
         self.wlan.active(True)
         self.wlan.connect(WIFI_SSID, WIFI_PASSWORD)
@@ -247,30 +333,25 @@ class ClockApp:
             return True
 
     def _sync_time(self):
-        # (Implementation unchanged)
         print("Attempting to sync time...")
-        try: ntptime.settime(); print("Time synced successfully.")
-        except Exception as e: print(f"Time sync error: {e}")
+        try: 
+            ntptime.settime()
+            print("Time synced successfully.")
+        except Exception as e: 
+            print(f"Time sync error: {e}")
 
     def _read_temperature(self):
-        # (Implementation unchanged)
         adc = machine.ADC(4)
         adc_voltage = adc.read_u16() * (3.3 / 65535)
         return 27 - (adc_voltage - 0.706) / 0.001721
     
     def _format_ip_for_display(self):
-        # (Implementation unchanged, no longer adds padding)
-        processed_list = []
-        i = 0
-        while i < len(self.ip_address):
-            char = self.ip_address[i]
-            if i + 1 < len(self.ip_address) and self.ip_address[i+1] == '.':
-                processed_list.append(char + '.')
-                i += 2
-            else:
-                processed_list.append(char)
-                i += 1
-        return "".join(processed_list)
+        """Format IP address for scrolling display, handling decimal points properly."""
+        if self.ip_address == "NO IP":
+            return self.ip_address
+        
+        # Replace dots with periods that will be handled by the display system
+        return self.ip_address.replace('.', '.')
 
     def _handle_button_press(self, current_time_ms):
         is_pressed = rp2.bootsel_button()
@@ -327,7 +408,7 @@ class ClockApp:
 
         # --- State: CONNECTING_WIFI ---
         elif self.state == 'CONNECTING_WIFI':
-            self.display.show("CONN")
+            self.display.show_text("CONN")
             if self._connect_to_wifi():
                 self._sync_time()
                 self.scroller.start(self._format_ip_for_display())
@@ -350,9 +431,9 @@ class ClockApp:
                 if self.time_temp_mode == 'time':
                     tm = utime.localtime()
                     self.colon_blink_state = not self.colon_blink_state
-                    self.display.show(f"{tm[3]:02d}{tm[4]:02d}", colon=self.colon_blink_state, degree=False)
+                    self.display.show_time(tm[3], tm[4], self.colon_blink_state)
                 else:
-                    self.display.show(f"{self._read_temperature():4.1f}C", colon=False, degree=True)
+                    self.display.show_temperature(self._read_temperature())
         
         # --- State: MANUAL_MODE ---
         elif self.state == 'MANUAL_MODE':
@@ -363,9 +444,9 @@ class ClockApp:
 
             if self.manual_mode_index == 0: # Show Time
                 tm = utime.localtime()
-                self.display.show(f"{tm[3]:02d}{tm[4]:02d}", colon=True, degree=False)
+                self.display.show_time(tm[3], tm[4], True)
             elif self.manual_mode_index == 1: # Show Temp
-                self.display.show(f"{self._read_temperature():4.1f}C", colon=False, degree=True)
+                self.display.show_temperature(self._read_temperature())
 
         # --- State: MANUAL_IP_SCROLL ---
         elif self.state == 'MANUAL_IP_SCROLL':
