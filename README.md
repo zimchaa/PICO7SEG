@@ -3,27 +3,179 @@
 
 This project displays time and temperature on a YSD-439AY2B-35 4-digit 7-segment display using a Raspberry Pi Pico running MicroPython. The display alternates between showing current time (with colon) and temperature (with degree symbol).
 
-## Features
-
-- WiFi-enabled time synchronization via NTP
-- Internal temperature sensor reading
-- Alternating display modes (Time/Temperature every 10 seconds)
-- Stable colon and degree symbol LEDs
-- Flicker-free multiplexed display
-- Simple wiring approach connecting top 8 pins to top of Pico, bottom 8 to bottom
-
 ![Raspberry Pi Pico 7-Segment Display Clock](attached_assets/IMG_4442_1753983734378.jpeg)
 
-## Hardware Requirements
+## Overview
 
+This project demonstrates two distinct approaches to driving a 7-segment display:
+
+1. **Simple Pin-by-Pin Approach (`main_simple.py`)** - Straightforward GPIO control with flexible wiring
+2. **Optimized mem32 Approach (`main_mem32.py` & `main_mem32_simple.py`)** - High-performance memory-mapped I/O requiring specific wiring
+
+Choose the approach that best fits your needs and experience level.
+
+---
+
+## Approach 1: Simple Pin-by-Pin Control
+
+### Features
+- Easy to understand and modify
+- Flexible wiring - pins can be connected in any order
+- Good for learning and prototyping
+- Uses standard MicroPython GPIO functions
+
+### Hardware Requirements
 - Raspberry Pi Pico (or Pico W for WiFi)
 - YSD-439AY2B-35 4-digit 7-segment display (Common Anode)
-- Breadboard
-- Jumper wires
-- 8x 220Ω resistors (nice to haves, current limiting for segments)
-- 4x 1kΩ resistors (nice to haves, current limiting for digits)
+- Breadboard and jumper wires
+- 8x 220Ω resistors (recommended for segment current limiting)
+- 4x 1kΩ resistors (recommended for digit current limiting)
 
-## Display Specifications
+### Simple Approach Wiring
+
+This approach allows flexible wiring. The pins used in `main_simple.py`:
+
+| Pico Pin | GPIO | Function | Display Pin | Resistor |
+|----------|------|----------|-------------|----------|
+| 10 | GP7 | Degree Cathode | 9 | - |
+| 11 | GP8 | Degree Anode | 10 | - |
+| 12 | GP9 | Segment F | 11 | 220Ω |
+| 14 | GP10 | Colon Cathode | 12 | - |
+| 15 | GP11 | Segment C | 13 | 220Ω |
+| 16 | GP12 | Segment A | 14 | 220Ω |
+| 17 | GP13 | Segment G | 7 | 220Ω |
+| 19 | GP14 | Segment B | 16 | 220Ω |
+| 21 | GP16 | Digit 1 | 1 | 1kΩ |
+| 22 | GP17 | Digit 2 | 2 | 1kΩ |
+| 24 | GP18 | Segment D | 3 | 220Ω |
+| 25 | GP19 | Colon Anode | 4 | - |
+| 26 | GP20 | Segment E | 5 | 220Ω |
+| 27 | GP21 | Digit 3 | 6 | 1kΩ |
+| 29 | GP22 | Decimal Point | 15 | 220Ω |
+| 31 | GP26 | Digit 4 | 8 | 1kΩ |
+
+### Simple Approach Setup
+
+1. Upload `main_simple.py` to your Pico
+2. Create `secrets.py` with your WiFi credentials
+3. Wire according to the table above
+4. Run the code
+
+### Simple Approach Limitations
+
+- Slower refresh rate may cause visible flicker
+- Each GPIO operation requires individual function calls
+- Less efficient CPU usage
+
+---
+
+## Approach 2: Optimized mem32 Implementation
+
+### Why mem32?
+
+The simple approach, while functional, has performance limitations. Each GPIO operation requires a function call overhead, limiting refresh rates and potentially causing flicker. The mem32 approach addresses this by:
+
+- **Direct memory access** to GPIO registers for maximum speed
+- **Batch operations** that set/clear multiple pins simultaneously
+- **Flicker-free display** with much higher refresh rates
+- **CPU efficiency** for smoother operation
+
+### Performance Comparison
+
+| Aspect | Simple Approach | mem32 Approach |
+|--------|----------------|----------------|
+| Refresh Rate | ~100Hz (visible flicker) | >400Hz (flicker-free) |
+| GPIO Operations | Individual pin calls | Batch register writes |
+| CPU Usage | Higher overhead | Optimized direct access |
+| Code Complexity | Simple to understand | More advanced |
+
+### Required Rewiring for mem32
+
+**IMPORTANT:** The mem32 approach requires specific GPIO pin arrangements to enable efficient batch operations. You must rewire your display to use consecutive GPIO regions.
+
+#### mem32 Wiring Configuration
+
+The optimized version uses two consecutive GPIO regions for maximum efficiency:
+
+| Pico Pin | GPIO | Function | Display Pin | Notes |
+|----------|------|----------|-------------|--------|
+| 4 | GP2 | Segment A | 14 | Consecutive |
+| 5 | GP3 | Segment B | 16 | GPIO |
+| 6 | GP4 | Segment C | 13 | Region |
+| 7 | GP5 | Segment D | 3 | 2-9 |
+| 8 | GP6 | Segment E | 5 | |
+| 9 | GP7 | Segment F | 11 | |
+| 10 | GP8 | Segment G | 7 | |
+| 11 | GP9 | Decimal Point | 15 | |
+| 14 | GP10 | Degree Cathode | 9 | Special |
+| 15 | GP11 | Degree Anode | 10 | LEDs |
+| 16 | GP12 | Digit 4 | 8 | Consecutive |
+| 17 | GP13 | Colon Cathode | 12 | GPIO |
+| 24 | GP18 | Digit 1 | 1 | Region |
+| 25 | GP19 | Digit 2 | 2 | 18-21 |
+| 26 | GP20 | Colon Anode | 4 | |
+| 27 | GP21 | Digit 3 | 6 | |
+
+### mem32 Implementation Versions
+
+#### Full Featured Version (`main_mem32.py`)
+
+- **Object-oriented design** with `SevenSegmentDisplay` and `Scroller` classes
+- **State machine** for different operating modes
+- **Button interaction** with BOOTSEL button
+- **Scrolling text support** for long messages
+- **Manual mode** for cycling through displays
+- **Modular architecture** - easy to swap display drivers or add features
+
+Key classes:
+- `SevenSegmentDisplay`: Hardware abstraction layer for the display
+- `Scroller`: Handles text scrolling animations
+- `ClockApp`: Main application logic and state management
+
+#### Compact Version (`main_mem32_simple.py`)
+
+- **Single file implementation** with minimal structure
+- **Same performance benefits** as the full version
+- **Reduced code size** for simpler deployment
+- **All features included** but in a more compact form
+
+### mem32 Technical Details
+
+#### Memory-Mapped I/O Registers
+
+```python
+SIO_BASE = 0xd0000000
+GPIO_OUT_SET = SIO_BASE + 0x14  # Set GPIO pins HIGH
+GPIO_OUT_CLR = SIO_BASE + 0x18  # Set GPIO pins LOW
+```
+
+#### Batch Operations
+
+Instead of individual pin operations:
+```python
+# Simple approach (slow)
+pin.value(1)
+pin.value(0)
+```
+
+The mem32 approach uses bitmasks:
+```python
+# mem32 approach (fast)
+machine.mem32[GPIO_OUT_SET] = pin_mask  # Set multiple pins
+machine.mem32[GPIO_OUT_CLR] = pin_mask  # Clear multiple pins
+```
+
+#### Pre-computed Masks
+
+All segment patterns are pre-calculated into bitmasks for instant lookup:
+```python
+SEG_ON_MASKS['8'] = 0b11111110  # Segments to turn ON for '8'
+SEG_OFF_MASKS['8'] = 0b00000001 # Segments to turn OFF for '8'
+```
+
+---
+
+## Display Hardware Specifications
 
 **Model:** YSD-439AY2B-35 (Common Anode)
 **Datasheet:** https://strawberry-linux.com/pub/YSD-439AY2B-35.pdf
@@ -54,55 +206,20 @@ Top View:
 - **Pin 15:** Decimal Point
 - **Pin 16:** Segment B
 
-## Wiring Guide
-
-### Raspberry Pi Pico Pinout Used
+### 7-Segment Layout
 ```
-Top Row (GP pins):
-GP7  -> Display Pin 9  (Degree Cathode)
-GP8  -> Display Pin 10 (Degree Anode)
-GP9  -> Display Pin 11 (Segment F)
-GP10 -> Display Pin 12 (Colon Cathode)
-GP11 -> Display Pin 13 (Segment C)
-GP12 -> Display Pin 14 (Segment A)
-GP13 -> Display Pin 7  (Segment G)
-GP14 -> Display Pin 16 (Segment B)
-
-Bottom Row (GP pins):
-GP16 -> Display Pin 1  (Digit 1)
-GP17 -> Display Pin 2  (Digit 2)  
-GP18 -> Display Pin 3  (Segment D)
-GP19 -> Display Pin 4  (Colon Anode)
-GP20 -> Display Pin 5  (Segment E)
-GP21 -> Display Pin 6  (Digit 3)
-GP22 -> Display Pin 15 (Decimal Point)
-GP26 -> Display Pin 8  (Digit 4)
+    ---A---
+   |       |
+   F       B
+   |       |
+    ---G---
+   |       |
+   E       C
+   |       |
+    ---D---   . DP
 ```
 
-### Complete Wiring Table
-| Pico Pin | GPIO | Function | Display Pin | Resistor |
-|----------|------|----------|-------------|----------|
-| 10 | GP7 | Degree Cathode | 9 | - |
-| 11 | GP8 | Degree Anode | 10 | - |
-| 12 | GP9 | Segment F | 11 | 220Ω |
-| 14 | GP10 | Colon Cathode | 12 | - |
-| 15 | GP11 | Segment C | 13 | 220Ω |
-| 16 | GP12 | Segment A | 14 | 220Ω |
-| 17 | GP13 | Segment G | 7 | 220Ω |
-| 19 | GP14 | Segment B | 16 | 220Ω |
-| 21 | GP16 | Digit 1 | 1 | 1kΩ |
-| 22 | GP17 | Digit 2 | 2 | 1kΩ |
-| 24 | GP18 | Segment D | 3 | 220Ω |
-| 25 | GP19 | Colon Anode | 4 | - |
-| 26 | GP20 | Segment E | 5 | 220Ω |
-| 27 | GP21 | Digit 3 | 6 | 1kΩ |
-| 29 | GP22 | Decimal Point | 15 | 220Ω |
-| 31 | GP26 | Digit 4 | 8 | 1kΩ |
-
-### Resistor Placement
-- **220Ω resistors:** Place between Pico GPIO pins and segment pins (A, B, C, D, E, F, G, DP)
-- **1kΩ resistors:** Place between Pico GPIO pins and digit select pins (1, 2, 3, 4)
-- **No resistors needed** for colon and degree symbol pins
+---
 
 ## Software Setup
 
@@ -119,43 +236,102 @@ SSID = "Your_WiFi_Network"
 PASSWORD = "Your_WiFi_Password"
 ```
 
-### 3. Upload Files
-Upload both `main.py` and `secrets.py` to the Pico using Thonny IDE or similar.
+### 3. Choose and Upload Your Approach
+- **Simple:** Upload `main_simple.py` and `secrets.py`
+- **Optimized:** Upload `main_mem32.py` (or `main_mem32_simple.py`) and `secrets.py`
+
+---
+
+## Using the Modular Architecture (mem32 versions)
+
+### Swapping Display Drivers
+
+The `SevenSegmentDisplay` class provides a clean interface that can be replaced with other display types:
+
+```python
+class MyCustomDisplay:
+    def __init__(self, pin_map, refresh_delay_us):
+        # Initialize your display hardware
+        pass
+    
+    def show(self, text, colon=None, degree=None):
+        # Update display buffer
+        pass
+    
+    def refresh(self):
+        # Render current buffer to hardware
+        pass
+
+# Use with existing ClockApp
+display = MyCustomDisplay(PINS, REFRESH_DELAY_US)
+app = ClockApp(display)
+app.run()
+```
+
+### Creating Custom Applications
+
+The display driver can be used independently:
+
+```python
+from main_mem32 import SevenSegmentDisplay, PINS, REFRESH_DELAY_US
+
+display = SevenSegmentDisplay(PINS, REFRESH_DELAY_US)
+
+while True:
+    display.show("HELLO")
+    display.refresh()
+```
+
+---
 
 ## Operation
 
-The display operates in two modes that alternate every 10 seconds:
+Both approaches provide the same user experience:
 
-1. **Time Mode:** Shows current time in HH:MM format with colon LED active
-2. **Temperature Mode:** Shows temperature in Celsius with degree symbol LED active
+### Display Modes
+1. **Time Mode:** Shows current time in HH:MM format with colon LED active (10 seconds)
+2. **Temperature Mode:** Shows temperature in Celsius with degree symbol LED active (5 seconds)
 
-### Display Features
-- **Multiplexed Display:** Fast switching between digits for flicker-free operation
-- **WiFi Sync:** Automatically syncs time via NTP when connected
-- **Error Handling:** Shows "Err" if WiFi connection fails
-- **Temperature Sensor:** Uses Pico's built-in temperature sensor
+### Interactive Features (mem32 versions)
+- **BOOTSEL Button:** Cycle through manual modes
+  - Press once: Show time
+  - Press twice: Show temperature  
+  - Press third time: Scroll IP address
+  - Auto-return to normal cycle after 15 seconds
+
+---
 
 ## Troubleshooting
 
 ### Common Issues
 1. **Display not lighting up:** Check power connections and resistor values
-2. **Ghosting between digits:** Verify multiplexing timing and clear_digits_and_segments() function
-3. **WiFi connection fails:** Check SSID/password in secrets.py
-4. **Incorrect segments:** Verify wiring against the pinout table above
+2. **Flicker (simple approach):** Normal behavior - consider upgrading to mem32 approach
+3. **No response (mem32):** Verify rewiring to consecutive GPIO regions
+4. **WiFi connection fails:** Check SSID/password in secrets.py
+5. **Incorrect segments:** Verify wiring against the appropriate pinout table
 
-### Debug Tips
-- Use Thonny's serial monitor to see debug output
-- Check that all resistors are properly connected
-- Verify display pin connections with multimeter
-- Ensure proper common anode wiring (anodes to +, cathodes to -)
+### Performance Issues
+- **Simple approach flicker:** Expected due to slower refresh rate
+- **mem32 approach:** Should be completely flicker-free
 
-## Code Structure
+### Migration from Simple to mem32
+1. **Rewire** according to mem32 pinout table
+2. **Update** pin configuration in code if using custom pins
+3. **Test** with multimeter to verify connections
 
-- **Pin Configuration:** All GPIO pins mapped to display functions
-- **Segment Patterns:** Character encoding for 7-segment display
-- **Multiplexing:** Fast digit switching for persistence of vision
-- **Timing Control:** Separate timers for data updates and mode switching
-- **WiFi Integration:** NTP time synchronization
+---
+
+## Choosing Your Approach
+
+| Choose Simple If: | Choose mem32 If: |
+|------------------|------------------|
+| Learning MicroPython | Want maximum performance |
+| Prototyping quickly | Building a finished project |
+| Don't mind some flicker | Need flicker-free display |
+| Want flexible wiring | Can commit to specific wiring |
+| Prefer simpler code | Want modular architecture |
+
+---
 
 ## License
 
