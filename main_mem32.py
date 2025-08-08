@@ -156,19 +156,29 @@ class SevenSegmentDisplay:
         """Print current display state in a readable format."""
         display_str = ""
         for i, (char, has_dp) in enumerate(self._display_data):
-            if char == ' ':
-                display_str += "[ ]"
-            else:
-                display_str += f"[{char}"
-                if has_dp:
-                    display_str += "."
+
+            if i == 2: # Colon  (2nd digit)
+                display_str += "["
+                if self._colon_on:
+                    display_str += ":"
+                else:
+                    display_str += " "
                 display_str += "]"
-        
-        # Add special indicators
-        if self._colon_on:
-            display_str += "[:]"
-        if self._degree_on:
-            display_str += "[°]"
+            elif i == 3: # Degree (3rd digit)   
+                display_str += "["
+                if self._degree_on:
+                    display_str += "°"
+                else:
+                    display_str += " "
+                display_str += "]"
+            display_str += "["
+            display_str += f"{char}"
+            if has_dp:
+                display_str += "."
+            else:
+                display_str += " "
+
+            display_str += "]"
         
         print(f"DISPLAY: {display_str}")
 
