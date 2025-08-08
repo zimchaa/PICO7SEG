@@ -6,6 +6,8 @@ import network
 import ntptime
 import rp2
 from secrets import SSID, PASSWORD
+import usocket as socket
+import ujson
 
 # --- 1. CONFIGURATION ---
 # User-configurable settings for the clock.
@@ -292,6 +294,230 @@ class Scroller:
         return self.is_active
 
 
+class RestApiServer:
+    """Minimal HTTP server to control the display over WiFi."""
+    def __init__(self, app):
+        self._app = app
+        self._sock = None
+        self._is_listening = False
+
+    def start(self):
+        if self._is_listening:
+            return
+        try:
+            addr = socket.getaddrinfo('0.0.0.0', 80)[0][-1]
+            self._sock = socket.socket()
+            try:
+                self._sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            except Exception:
+                pass
+            self._sock.bind(addr)
+            self._sock.listen(2)
+            # Non-blocking accept
+            try:
+                self._sock.settimeout(0)
+            except Exception:
+                pass
+            self._is_listening = True
+            print("REST API listening on :80")
+        except Exception as e:
+            print("REST API start error:", e)
+            self._sock = None
+            self._is_listening = False
+
+    def _url_decode(self, s):
+        try:
+            res = ''
+            i = 0
+            while i < len(s):
+                c = s[i]
+                if c == '+':
+                    res += ' '
+                    i += 1
+                elif c == '%' and i + 2 < len(s):
+                    try:
+                        res += chr(int(s[i+1:i+3], 16))
+                        i += 3
+                    except Exception:
+                        res += c
+                        i += 1
+                else:
+                    res += c
+                    i += 1
+            return res
+        except Exception:
+            return s
+
+    def _parse_request(self, data):
+        try:
+            text = data.decode('utf-8')
+        except Exception:
+            text = str(data)
+        lines = text.split('\r\n')
+        request_line = lines[0] if lines else ''
+        parts = request_line.split(' ')
+        method = parts[0] if len(parts) > 0 else 'GET'
+        target = parts[1] if len(parts) > 1 else '/'
+        path, query = target.split('?', 1) if '?' in target else (target, '')
+
+        headers = {}
+        i = 1
+        while i < len(lines) and lines[i]:
+            if ':' in lines[i]:
+                k, v = lines[i].split(':', 1)
+                headers[k.strip().lower()] = v.strip()
+            i += 1
+
+        body = ''
+        if method == 'POST':
+            try:
+                content_length = int(headers.get('content-length', '0'))
+            except Exception:
+                content_length = 0
+            try:
+                raw = text.split('\r\n\r\n', 1)[1]
+            except Exception:
+                raw = ''
+            if len(raw) < content_length:
+                pass
+            body = raw[:content_length]
+
+        params = {}
+        if query:
+            for pair in query.split('&'):
+                if not pair:
+                    continue
+                if '=' in pair:
+                    k, v = pair.split('=', 1)
+                else:
+                    k, v = pair, ''
+                params[self._url_decode(k)] = self._url_decode(v)
+
+        json_payload = None
+        if body:
+            try:
+                json_payload = ujson.loads(body)
+            except Exception:
+                json_payload = None
+
+        return method, path, params, headers, body, json_payload
+
+    def _send_json(self, conn, status_code, payload_dict):
+        try:
+            body = ujson.dumps(payload_dict)
+        except Exception:
+            body = '{"ok":false}'
+        status_text = 'OK' if status_code == 200 else 'ERROR'
+        headers = [
+            'HTTP/1.1 %d %s' % (status_code, status_text),
+            'Content-Type: application/json',
+            'Connection: close',
+            'Content-Length: %d' % len(body),
+            '',
+            ''
+        ]
+        try:
+            conn.send('\r\n'.join(headers))
+            conn.send(body)
+        except Exception:
+            pass
+
+    def poll(self):
+        if not self._is_listening or self._sock is None:
+            return
+        try:
+            conn, addr = self._sock.accept()
+        except OSError:
+            return
+        except Exception:
+            return
+        try:
+            try:
+                conn.settimeout(0.5)
+            except Exception:
+                pass
+            data = conn.recv(1024)
+            method, path, params, headers, body, json_payload = self._parse_request(data or b'')
+
+            def get_param(name, default=None):
+                if json_payload and name in json_payload:
+                    return json_payload.get(name, default)
+                return params.get(name, default)
+
+            if path == '/api/status':
+                self._send_json(conn, 200, {
+                    'ok': True,
+                    'ip': self._app.ip_address,
+                    'state': self._app.state,
+                    'mode': self._app.time_temp_mode,
+                })
+                return
+
+            if path == '/api/clear':
+                self._app.scroller.stop()
+                self._app.display.clear()
+                self._app.exit_api_mode()
+                self._send_json(conn, 200, {'ok': True})
+                return
+
+            if path == '/api/display':
+                text = get_param('text', '')
+                if not isinstance(text, str):
+                    text = str(text)
+                colon = get_param('colon', None)
+                degree = get_param('degree', None)
+                duration_s = get_param('duration', 15)
+                try:
+                    duration_s = int(duration_s)
+                except Exception:
+                    duration_s = 15
+                self._app.api_show_text(text, self._to_bool(colon) if colon is not None else None, self._to_bool(degree) if degree is not None else None, duration_s)
+                self._send_json(conn, 200, {'ok': True})
+                return
+
+            if path == '/api/scroll':
+                text = get_param('text', '')
+                if not isinstance(text, str):
+                    text = str(text)
+                loop = self._to_bool(get_param('loop', False))
+                duration_s = get_param('duration', 15)
+                try:
+                    duration_s = int(duration_s)
+                except Exception:
+                    duration_s = 15
+                self._app.api_scroll_text(text, loop, duration_s)
+                self._send_json(conn, 200, {'ok': True})
+                return
+
+            # Default root
+            self._send_json(conn, 200, {
+                'ok': True,
+                'message': 'Pico 7-seg API',
+                'endpoints': ['/api/status', '/api/display', '/api/scroll', '/api/clear']
+            })
+        except Exception as e:
+            try:
+                self._send_json(conn, 500, {'ok': False, 'error': str(e)})
+            except Exception:
+                pass
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+    def _to_bool(self, value):
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return bool(value)
+        if isinstance(value, str):
+            v = value.strip().lower()
+            if v in ('1', 'true', 'yes', 'on'): return True
+            if v in ('0', 'false', 'no', 'off', ''): return False
+        return bool(value)
+
+
 class ClockApp:
     """The main application logic for the clock."""
     def __init__(self, display):
@@ -299,6 +525,7 @@ class ClockApp:
         self.scroller = Scroller(display, SCROLL_DELAY_MS)
         self.wlan = None
         self.ip_address = "NO IP"
+        self.api_server = RestApiServer(self)
 
         # --- State Machine ---
         self.state = 'STARTUP'
@@ -309,6 +536,7 @@ class ClockApp:
         self.last_mode_switch_ms = 0
         self.time_temp_mode = 'time'
         self.colon_blink_state = False
+        self.api_mode_end_ms = 0
 
         # --- Manual Mode ---
         self.button_state = 0
@@ -330,6 +558,10 @@ class ClockApp:
         else:
             self.ip_address = self.wlan.ifconfig()[0]
             print(f"\nConnected! IP: {self.ip_address}")
+            try:
+                self.api_server.start()
+            except Exception as e:
+                print("API server start failed:", e)
             return True
 
     def _sync_time(self):
@@ -434,32 +666,48 @@ class ClockApp:
                     self.display.show_time(tm[3], tm[4], self.colon_blink_state)
                 else:
                     self.display.show_temperature(self._read_temperature())
+
+        # --- State: API_STATIC ---
+        elif self.state == 'API_STATIC':
+            if utime.ticks_diff(current_time_ms, self.api_mode_end_ms) >= 0:
+                self.state = 'NORMAL_CYCLE'
+                print("API static display expired. Returning to NORMAL_CYCLE")
+                return
+
+        # --- State: API_SCROLL ---
+        elif self.state == 'API_SCROLL':
+            if utime.ticks_diff(current_time_ms, self.api_mode_end_ms) >= 0:
+                self.scroller.stop()
+                self.state = 'NORMAL_CYCLE'
+                print("API scroll expired. Returning to NORMAL_CYCLE")
+                return
+
+    # --- API helpers ---
+    def _enter_api_mode(self, duration_s):
+        now_ms = utime.ticks_ms()
+        self.api_mode_end_ms = utime.ticks_add(now_ms, int(duration_s) * 1000)
+
+    def exit_api_mode(self):
+        self.api_mode_end_ms = 0
+        if self.state in ('API_STATIC', 'API_SCROLL'):
+            self.state = 'NORMAL_CYCLE'
+
+    def api_show_text(self, text, colon=None, degree=None, duration_s=15):
+        self.scroller.stop()
+        try:
+            self.display.show_text(text, colon=bool(colon) if colon is not None else None, degree=bool(degree) if degree is not None else None)
+        except Exception:
+            self.display.show_text(str(text))
+        self._enter_api_mode(duration_s)
+        self.state = 'API_STATIC'
+        print("API: show text:", text)
+
+    def api_scroll_text(self, text, loop=False, duration_s=15):
+        self.scroller.start(text, loop=bool(loop))
+        self._enter_api_mode(duration_s)
+        self.state = 'API_SCROLL'
+        print("API: scroll text:", text, "loop=", loop)
         
-        # --- State: MANUAL_MODE ---
-        elif self.state == 'MANUAL_MODE':
-            if utime.ticks_diff(current_time_ms, self.last_manual_action_ms) > MANUAL_MODE_TIMEOUT_S * 1000:
-                self.state = 'NORMAL_CYCLE'
-                print(f"Manual mode timed out. State changed to: {self.state}")
-                return
-
-            if self.manual_mode_index == 0: # Show Time
-                tm = utime.localtime()
-                self.display.show_time(tm[3], tm[4], True)
-            elif self.manual_mode_index == 1: # Show Temp
-                self.display.show_temperature(self._read_temperature())
-
-        # --- State: MANUAL_IP_SCROLL ---
-        elif self.state == 'MANUAL_IP_SCROLL':
-            if utime.ticks_diff(current_time_ms, self.last_manual_action_ms) > MANUAL_MODE_TIMEOUT_S * 1000:
-                self.scroller.stop() # Stop the scroll before changing state
-                self.state = 'NORMAL_CYCLE'
-                print(f"Manual mode timed out. State changed to: {self.state}")
-                return
-            
-            # This state's action is to start a looping scroll.
-            # The check at the top of the function will then take over.
-            self.scroller.start(self._format_ip_for_display(), loop=True)
-            print("Started looping IP scroll.")
 
     def run(self):
         """The main execution loop."""
@@ -474,6 +722,11 @@ class ClockApp:
             current_time_ms = utime.ticks_ms()
             self._handle_button_press(current_time_ms)
             self._update_state_machine(current_time_ms)
+            # Poll REST API (non-blocking)
+            try:
+                self.api_server.poll()
+            except Exception:
+                pass
 
 
 # --- Main Execution ---

@@ -301,6 +301,45 @@ Both approaches provide the same user experience:
 
 ---
 
+## REST API (Pico W)
+
+When using `main_mem32.py` on a Pico W with valid WiFi credentials in `secrets.py`, a minimal HTTP server is started after WiFi connects. Find the device IP on the display (or via your router) and make requests against it.
+
+Base URL: `http://<pico_ip>`
+
+### Endpoints
+- `GET /api/status` → Returns current status.
+- `GET /api/clear` → Clears the display and exits API override mode.
+- `GET|POST /api/display?text=1234&colon=1&degree=0&duration=15` → Show up to 4 chars statically for `duration` seconds. Decimal points are supported by including a dot after the digit (e.g., `1.23`).
+- `GET|POST /api/scroll?text=HELLO%20WORLD&loop=0&duration=15` → Scroll longer text for `duration` seconds. If `loop=1`, it repeats until duration expires.
+
+Boolean parameters accept `1/0`, `true/false`, `yes/no`, `on/off`.
+
+### Examples
+
+```bash
+# Show four digits
+curl "http://<pico_ip>/api/display?text=1234"
+
+# Show with decimal point after first digit and colon on for 10s
+curl "http://<pico_ip>/api/display?text=1.234&colon=1&duration=10"
+
+# Scroll a message for 20s
+curl "http://<pico_ip>/api/scroll?text=HELLO%20PICO%20W&duration=20"
+
+# Clear
+curl "http://<pico_ip>/api/clear"
+
+# Status
+curl "http://<pico_ip>/api/status"
+```
+
+Notes:
+- API-driven content temporarily overrides the normal time/temperature cycle and then automatically returns after `duration` seconds.
+- If you POST JSON, you can send the same keys in the body: `{ "text": "1234", "colon": true, "degree": false, "duration": 15 }`.
+
+---
+
 ## Troubleshooting
 
 ### Common Issues
