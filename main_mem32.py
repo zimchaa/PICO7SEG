@@ -423,12 +423,26 @@ class Scroller:
         return self.is_active
 
 
+import collections
+
+# --- API Request Queue ---
+class ApiRequest:
+    def __init__(self, method, path, params, headers, body, json_payload, conn=None):
+        self.method = method
+        self.path = path
+        self.params = params
+        self.headers = headers
+        self.body = body
+        self.json_payload = json_payload
+        self.conn = conn
+
 class RestApiServer:
-    """Minimal HTTP server to control the display over WiFi."""
+    """Minimal HTTP server to control the display over WiFi. Now queues requests for main loop processing."""
     def __init__(self, app):
         self._app = app
         self._sock = None
         self._is_listening = False
+        self._request_queue = collections.deque()
 
     def start(self):
         if self._is_listening:
@@ -442,7 +456,6 @@ class RestApiServer:
                 pass
             self._sock.bind(addr)
             self._sock.listen(2)
-            # Non-blocking accept
             try:
                 self._sock.settimeout(0)
             except Exception:
@@ -562,78 +575,24 @@ class RestApiServer:
             return
         try:
             try:
-                conn.settimeout(0.5)
+                conn.settimeout(0.1)
             except Exception:
                 pass
             data = conn.recv(1024)
             method, path, params, headers, body, json_payload = self._parse_request(data or b'')
-
-            def get_param(name, default=None):
-                if json_payload and name in json_payload:
-                    return json_payload.get(name, default)
-                return params.get(name, default)
-
-            if path == '/api/status':
-                self._send_json(conn, 200, {
-                    'ok': True,
-                    'ip': self._app.ip_address,
-                    'state': self._app.state,
-                    'mode': self._app.time_temp_mode,
-                })
-                return
-
-            if path == '/api/clear':
-                self._app.scroller.stop()
-                self._app.display.clear()
-                self._app.exit_api_mode()
-                self._send_json(conn, 200, {'ok': True})
-                return
-
-            if path == '/api/display':
-                text = get_param('text', '')
-                if not isinstance(text, str):
-                    text = str(text)
-                colon = get_param('colon', None)
-                degree = get_param('degree', None)
-                duration_s = get_param('duration', 15)
-                try:
-                    duration_s = int(duration_s)
-                except Exception:
-                    duration_s = 15
-                self._app.api_show_text(text, self._to_bool(colon) if colon is not None else None, self._to_bool(degree) if degree is not None else None, duration_s)
-                self._send_json(conn, 200, {'ok': True})
-                return
-
-            if path == '/api/scroll':
-                text = get_param('text', '')
-                if not isinstance(text, str):
-                    text = str(text)
-                loop = self._to_bool(get_param('loop', False))
-                duration_s = get_param('duration', 15)
-                try:
-                    duration_s = int(duration_s)
-                except Exception:
-                    duration_s = 15
-                self._app.api_scroll_text(text, loop, duration_s)
-                self._send_json(conn, 200, {'ok': True})
-                return
-
-            # Default root
-            self._send_json(conn, 200, {
-                'ok': True,
-                'message': 'Pico 7-seg API',
-                'endpoints': ['/api/status', '/api/display', '/api/scroll', '/api/clear']
-            })
-        except Exception as e:
-            try:
-                self._send_json(conn, 500, {'ok': False, 'error': str(e)})
-            except Exception:
-                pass
-        finally:
+            # Instead of processing, queue the request for main loop
+            self._request_queue.append(ApiRequest(method, path, params, headers, body, json_payload, conn))
+        except Exception:
             try:
                 conn.close()
             except Exception:
                 pass
+
+    def process_queued_requests(self):
+        # Called from main loop, processes all queued API requests
+        while self._request_queue:
+            req = self._request_queue.popleft()
+            self._handle_api_request(req)
 
     def _to_bool(self, value):
         if isinstance(value, bool):
@@ -645,6 +604,76 @@ class RestApiServer:
             if v in ('1', 'true', 'yes', 'on'): return True
             if v in ('0', 'false', 'no', 'off', ''): return False
         return bool(value)
+
+    def _get_param(self, req, name, default=None):
+        if req.json_payload and name in req.json_payload:
+            return req.json_payload.get(name, default)
+        return req.params.get(name, default)
+
+    def _handle_api_request(self, req):
+        # All API logic is now here, called from main loop
+        try:
+            if req.path == '/api/status':
+                self._send_json(req.conn, 200, {
+                    'ok': True,
+                    'ip': self._app.ip_address,
+                    'state': self._app.state,
+                    'mode': self._app.time_temp_mode,
+                })
+                return
+
+            if req.path == '/api/clear':
+                self._app.scroller.stop()
+                self._app.display.clear()
+                self._app.exit_api_mode()
+                self._send_json(req.conn, 200, {'ok': True})
+                return
+
+            if req.path == '/api/display':
+                text = self._get_param(req, 'text', '')
+                if not isinstance(text, str):
+                    text = str(text)
+                colon = self._get_param(req, 'colon', None)
+                degree = self._get_param(req, 'degree', None)
+                duration_s = self._get_param(req, 'duration', 15)
+                try:
+                    duration_s = int(duration_s)
+                except Exception:
+                    duration_s = 15
+                self._app.api_show_text(text, self._to_bool(colon) if colon is not None else None, self._to_bool(degree) if degree is not None else None, duration_s)
+                self._send_json(req.conn, 200, {'ok': True})
+                return
+
+            if req.path == '/api/scroll':
+                text = self._get_param(req, 'text', '')
+                if not isinstance(text, str):
+                    text = str(text)
+                loop = self._to_bool(self._get_param(req, 'loop', False))
+                duration_s = self._get_param(req, 'duration', 15)
+                try:
+                    duration_s = int(duration_s)
+                except Exception:
+                    duration_s = 15
+                self._app.api_scroll_text(text, loop, duration_s)
+                self._send_json(req.conn, 200, {'ok': True})
+                return
+
+            # Default root
+            self._send_json(req.conn, 200, {
+                'ok': True,
+                'message': 'Pico 7-seg API',
+                'endpoints': ['/api/status', '/api/display', '/api/scroll', '/api/clear']
+            })
+        except Exception as e:
+            try:
+                self._send_json(req.conn, 500, {'ok': False, 'error': str(e)})
+            except Exception:
+                pass
+        finally:
+            try:
+                req.conn.close()
+            except Exception:
+                pass
 
 
 class ClockApp:
@@ -889,9 +918,14 @@ class ClockApp:
             current_time_ms = utime.ticks_ms()
             self._handle_button_press(current_time_ms)
             self._update_state_machine(current_time_ms)
-            # Poll REST API (non-blocking)
+            # Poll REST API (non-blocking, just queues requests)
             try:
                 self.api_server.poll()
+            except Exception:
+                pass
+            # Process any queued API requests (non-blocking, quick)
+            try:
+                self.api_server.process_queued_requests()
             except Exception:
                 pass
 
