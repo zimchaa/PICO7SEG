@@ -561,11 +561,26 @@ class RestApiServer:
         except Exception:
             return
         try:
+            # Make the connection non-blocking to avoid stalling the display refresh
             try:
-                conn.settimeout(0.5)
+                conn.settimeout(0)
             except Exception:
                 pass
-            data = conn.recv(1024)
+
+            # Read available data without blocking
+            data = b''
+            while True:
+                try:
+                    chunk = conn.recv(1024)
+                    if not chunk:
+                        break
+                    data += chunk
+                    if len(chunk) < 1024:
+                        break
+                except OSError:
+                    break
+                except Exception:
+                    break
             method, path, params, headers, body, json_payload = self._parse_request(data or b'')
 
             def get_param(name, default=None):
