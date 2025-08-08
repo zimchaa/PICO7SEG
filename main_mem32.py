@@ -139,12 +139,38 @@ class SevenSegmentDisplay:
             self._display_data[display_pos] = (char, has_dp)
             text_pos += 1
             display_pos += 1
+            
+            # Debug: print what we're processing
+            # print(f"DEBUG: text_pos={text_pos}, display_pos={display_pos}, char='{char}', has_dp={has_dp}, text='{text}'")
         
         # Update special indicators
         if colon is not None:
             self._colon_on = colon
         if degree is not None:
             self._degree_on = degree
+        
+        # Debug output
+        self._debug_display()
+
+    def _debug_display(self):
+        """Print current display state in a readable format."""
+        display_str = ""
+        for i, (char, has_dp) in enumerate(self._display_data):
+            if char == ' ':
+                display_str += "[ ]"
+            else:
+                display_str += f"[{char}"
+                if has_dp:
+                    display_str += "."
+                display_str += "]"
+        
+        # Add special indicators
+        if self._colon_on:
+            display_str += "[:]"
+        if self._degree_on:
+            display_str += "[°]"
+        
+        print(f"DISPLAY: {display_str}")
 
     def show_time(self, hour, minute, colon_blink=True):
         """
@@ -170,12 +196,19 @@ class SevenSegmentDisplay:
         elif temp_celsius >= 10:
             temp_str = f"{temp_celsius:4.1f}"
         elif temp_celsius >= 0:
-            temp_str = f" {temp_celsius:3.1f}"
+            temp_str = f"{temp_celsius:3.1f}"
         else:
             temp_str = f"{temp_celsius:4.1f}"
         
         # Replace last character with 'C' and add degree symbol
-        if len(temp_str) >= 4:
+        if '.' in temp_str:
+            # Find the position of the decimal point
+            dp_pos = temp_str.find('.')
+            # Keep everything up to and including the decimal point and one digit after, then add 'C'
+            # For "32.1", dp_pos=2, so we want temp_str[:4] to get "32.1"
+            temp_str = temp_str[:dp_pos+2] + 'C'
+        else:
+            # No decimal point, truncate to 3 characters and add 'C'
             temp_str = temp_str[:3] + 'C'
         
         self.show_text(temp_str, colon=False, degree=True)
@@ -183,6 +216,53 @@ class SevenSegmentDisplay:
     def clear(self):
         """Clear the display."""
         self.show_text("    ", colon=False, degree=False)
+    
+    def test_leds(self):
+        """Test each LED segment and digit individually."""
+        # Test each digit position
+        for digit in range(4):
+            # Turn off all digits and segments
+            machine.mem32[self._GPIO_OUT_CLR] = self._ALL_ANODES_MASK
+            machine.mem32[self._GPIO_OUT_SET] = self._ALL_SEGMENTS_MASK | self._DP_MASK
+            
+            # Turn on current digit
+            machine.mem32[self._GPIO_OUT_SET] = self._ANODE_MASKS[digit]
+            
+            # Test each segment (a, b, c, d, e, f, g, dp)
+            segment_pins = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'dp']
+            for segment in segment_pins:
+                # Turn off all segments
+                machine.mem32[self._GPIO_OUT_SET] = self._ALL_SEGMENTS_MASK | self._DP_MASK
+                
+                # Turn on current segment
+                pin_num = self._pins[segment]
+                machine.mem32[self._GPIO_OUT_CLR] = (1 << pin_num)
+                
+                # Hold for a moment
+                utime.sleep_ms(100)
+            
+            # Turn off all segments
+            machine.mem32[self._GPIO_OUT_SET] = self._ALL_SEGMENTS_MASK | self._DP_MASK
+        
+        # Test colon LED
+        machine.mem32[self._GPIO_OUT_CLR] = self._ALL_ANODES_MASK
+        machine.mem32[self._GPIO_OUT_SET] = self._ALL_SEGMENTS_MASK | self._DP_MASK
+        machine.mem32[self._GPIO_OUT_SET] = self._COLON_ANODE_MASK
+        machine.mem32[self._GPIO_OUT_CLR] = self._COLON_CATHODE_MASK
+        utime.sleep_ms(200)
+        machine.mem32[self._GPIO_OUT_CLR] = self._COLON_ANODE_MASK
+        
+        # Test degree LED
+        machine.mem32[self._GPIO_OUT_SET] = self._DEG_ANODE_MASK
+        machine.mem32[self._GPIO_OUT_CLR] = self._DEG_CATHODE_MASK
+        utime.sleep_ms(200)
+        machine.mem32[self._GPIO_OUT_CLR] = self._DEG_ANODE_MASK
+        
+        # Turn off everything
+        machine.mem32[self._GPIO_OUT_CLR] = self._ALL_ANODES_MASK | self._COLON_ANODE_MASK | self._DEG_ANODE_MASK
+        machine.mem32[self._GPIO_OUT_SET] = self._ALL_SEGMENTS_MASK | self._DP_MASK | self._COLON_CATHODE_MASK | self._DEG_CATHODE_MASK
+    
+
 
     def refresh(self):
         """Refresh the display by multiplexing through all digits."""
@@ -277,12 +357,51 @@ class Scroller:
         if utime.ticks_diff(now, self.last_scroll_time_ms) > self.scroll_delay_ms:
             self.last_scroll_time_ms = now
             
-            # Display the 4-character slice of the message
-            display_slice = self.message[self.index : self.index + 4]
-            # Scrolling text does not use colon or degree indicators
-            self.display.show_text(display_slice, colon=False, degree=False)
-            
-            self.index += 1
+            # Keep trying to find a valid slice that doesn't start with a decimal point
+            while self.index < len(self.message):
+                # If the slice would start with a decimal point, skip it and try the next position
+                if self.message[self.index] == '.':
+                    self.index += 1
+                    continue
+                
+                # Display a slice of the message that will result in 4 display positions
+                # Start with 4 characters, but extend as needed to fill all 4 display positions
+                slice_size = 4
+                max_slice_size = min(8, len(self.message) - self.index)  # Limit to prevent going out of bounds
+                
+                # Keep extending the slice until we have exactly 4 display positions
+                while slice_size <= max_slice_size:
+                    display_slice = self.message[self.index : self.index + slice_size]
+                    
+                    # Count how many display positions this slice will use
+                    display_count = 0
+                    i = 0
+                    while i < len(display_slice):
+                        if i + 1 < len(display_slice) and display_slice[i + 1] == '.':
+                            display_count += 1  # Character + decimal point = 1 display position
+                            i += 2  # Skip both character and decimal point
+                        else:
+                            display_count += 1  # Character = 1 display position
+                            i += 1
+                    
+                    # If we have exactly 4 display positions, we're done
+                    if display_count == 4:
+                        break
+                    # If we have more than 4 display positions, we went too far
+                    elif display_count > 4:
+                        # Go back one character
+                        slice_size -= 1
+                        display_slice = self.message[self.index : self.index + slice_size]
+                        break
+                    # If we have less than 4 display positions, extend the slice
+                    else:
+                        slice_size += 1
+                
+                # Scrolling text does not use colon or degree indicators
+                self.display.show_text(display_slice, colon=False, degree=False)
+                
+                self.index += 1
+                break  # We found a valid slice, exit the outer loop
             
             # Check if the scroll has finished
             if self.index > len(self.message) - 4:
@@ -626,9 +745,16 @@ class ClockApp:
         # --- State: STARTUP ---
         if self.state == 'STARTUP':
             self.scroller.start(STARTUP_MESSAGE)
-            self.next_state_after_scroll = 'CONNECTING_WIFI'
+            self.next_state_after_scroll = 'LED_TEST'
             self.state = 'AWAIT_SCROLL' # Wait for the scroll to finish
             print(f"State changed to: AWAIT_SCROLL (next: {self.next_state_after_scroll})")
+            
+        # --- State: LED_TEST ---
+        elif self.state == 'LED_TEST':
+            print("Testing all LEDs...")
+            self.display.test_leds()
+            self.state = 'CONNECTING_WIFI'
+            print(f"State changed to: {self.state}")
             
         # --- State: AWAIT_SCROLL ---
         elif self.state == 'AWAIT_SCROLL':
@@ -681,6 +807,37 @@ class ClockApp:
                 self.state = 'NORMAL_CYCLE'
                 print("API scroll expired. Returning to NORMAL_CYCLE")
                 return
+
+        # --- State: MANUAL_MODE ---
+        elif self.state == 'MANUAL_MODE':
+            if utime.ticks_diff(current_time_ms, self.last_manual_action_ms) > MANUAL_MODE_TIMEOUT_S * 1000:
+                self.state = 'NORMAL_CYCLE'
+                print(f"Manual mode timed out. State changed to: {self.state}")
+                return
+
+            # Update data at the same rate as normal mode (once per second)
+            if utime.ticks_diff(current_time_ms, self.last_data_update_ms) >= 1000:
+                self.last_data_update_ms = current_time_ms
+                if self.manual_mode_index == 0: # Show Time
+                    tm = utime.localtime()
+                    self.colon_blink_state = not self.colon_blink_state
+                    self.display.show_time(tm[3], tm[4], self.colon_blink_state)
+                elif self.manual_mode_index == 1: # Show Temp
+                    self.display.show_temperature(self._read_temperature())
+
+        # --- State: MANUAL_IP_SCROLL ---
+        elif self.state == 'MANUAL_IP_SCROLL':
+            if utime.ticks_diff(current_time_ms, self.last_manual_action_ms) > MANUAL_MODE_TIMEOUT_S * 1000:
+                self.scroller.stop() # Stop the scroll before changing state
+                self.state = 'NORMAL_CYCLE'
+                print(f"Manual mode timed out. State changed to: {self.state}")
+                return
+            
+            # This state's action is to start a looping scroll.
+            # The check at the top of the function will then take over.
+            if not self.scroller.is_active:
+                self.scroller.start(self._format_ip_for_display(), loop=True)
+                print("Started looping IP scroll.")
 
     # --- API helpers ---
     def _enter_api_mode(self, duration_s):
